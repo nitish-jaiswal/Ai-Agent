@@ -303,13 +303,8 @@ async def get_product_by_name(name: str, token: str = Depends(oauth2_scheme)):
     result = await handle_product_intent("get_product_by_name", data, token)
     if result.get("status") != "success":
         raise HTTPException(status_code=400, detail=result.get("message"))
-    return {
-        "statusCode": 200,
-        "data": result.get("data", result),
-        "message": "Product fetched successfully",
-        "success": True,
-        "status": "success"
-    }
+    return result
+
 
 # NEW ENDPOINT: NLP interface for product queries
 @router.post("/nlp-query", summary="Process natural language product queries")

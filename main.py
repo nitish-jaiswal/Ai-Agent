@@ -21,26 +21,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 
 
-
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI()
-
-# Enable CORS for all APIs
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
-)
-
-@app.get("/")
-def read_root():
-    return {"message": "CORS is enabled successfully!"}
-
-
 
 
 
@@ -48,6 +29,16 @@ def read_root():
 load_dotenv()
 
 app = FastAPI(title="Vypar app")
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Load API Keys
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
