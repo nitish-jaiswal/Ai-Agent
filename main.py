@@ -111,6 +111,8 @@ def get_intent_from_ai_agent(query: str, conversation_history: List[Dict[str, An
     - update_product: Update product details (requires productId and at least one field to update)
     - delete_product: Delete a product (requires productId)
     - get_product_by_name: Get product by name (requires name)
+    - get_all_products: Get all products of the dealer (no additional fields required; dealer id is taken from the token)
+
     
     For 'sales' category:
     - create_sale: Create a new sale (requires customerId, products array, paymentMethod, optional amountPaid)
@@ -192,6 +194,9 @@ def check_required_fields(category: str, intent: str, data: Dict[str, Any]):
             required_fields = ["productId"]
         elif intent == "get_product_by_name":
             required_fields = ["name"]
+        elif intent == "get_all_products":
+            required_fields = []  # No additional fields are needed since dealer id is from the token
+
     elif category == "sales":
         if intent == "create_sale":
             required_fields = ["customerId", "products", "paymentMethod"]

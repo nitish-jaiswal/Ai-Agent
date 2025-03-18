@@ -52,9 +52,6 @@ async def get_product_by_name_db(name: str):
     return product_json
 
 
-
-
-# Function to determine the backend route, HTTP method, and payload based on the intent
 def detect_product_intent(intent: str, data: Dict[str, Any]):
     if intent == "create_product":
         return f"{NODEJS_API_BASE}/product/create-product", "POST", data
@@ -66,6 +63,9 @@ def detect_product_intent(intent: str, data: Dict[str, Any]):
         # For getting product details via remote API, the backend expects "productName"
         payload = {"productName": data.get("name")}
         return f"{NODEJS_API_BASE}/product/get-by-name", "GET", payload
+    elif intent == "get_all_products":
+        # New intent to get all products for the dealer (dealer id is provided via JWT in the header)
+        return f"{NODEJS_API_BASE}/product/product-of-dealer", "GET", {}
     else:
         raise HTTPException(status_code=400, detail=f"Invalid product intent: {intent}")
 
