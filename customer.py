@@ -131,23 +131,6 @@ async def handle_intent(intent: str, data: Dict[str, Any], token: str):
                 "message": f"API request failed: {str(exc)}"
             }
 
-@router.delete("/delete/by-name")
-async def delete_customer_by_name(customer: CustomerDelete, token: str = Depends(oauth2_scheme)):
-    data = customer.dict()
-    result = await handle_intent("delete_customer", data, token)
-    
-    if result.get("status") != "success":
-        raise HTTPException(status_code=400, detail=result.get("message"))
-    
-    return {
-        "statusCode": 200,
-        "data": result.get("data", result),
-        "message": "Customer deleted successfully",
-        "success": True,
-        "status": "success",
-        "conversation_id": "67d232676e7a77a715d19330"
-    }
-
 @router.post("/get/by-name")
 async def fetch_customer_by_name(payload: Dict[str, Any], token: str = Depends(oauth2_scheme)):
     if "name" not in payload:

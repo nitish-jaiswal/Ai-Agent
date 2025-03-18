@@ -5,6 +5,7 @@ from customer import router as customer_router, detect_intent as customer_detect
 from business import router as business_router, detect_intent as business_detect_intent, handle_intent as business_handle_intent
 from product import router as product_router
 from sales import router as sales_router
+from dealer import handle_intent as dealer_handle_intent  # <-- NEW: Import dealer intent handler
 from langchain_groq import ChatGroq
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.prebuilt import create_react_agent
@@ -17,6 +18,10 @@ from fastapi.security import OAuth2PasswordBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 from bson import ObjectId
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(title="Vypar app")
 
@@ -80,15 +85,11 @@ async def save_conversation_message(conversation_id: str, role: str, content: st
     })
 
 def get_intent_from_ai_agent(query: str, conversation_history: List[Dict[str, Any]] = None):
-    """
-    Use the LLM to determine the category, intent, and extract relevant data from user query
-    with conversation history for context
-    """
     llm = ChatGroq(model="llama-3.3-70b-versatile")
     
     system_prompt = """
     You are an AI assistant that detects intents from user queries and extracts relevant data.
-    Your task is to categorize the user's request into one of four categories: 'customer', 'business', 'product', or 'sales'.
+    Your task is to categorize the user's request into one of five categories: 'customer', 'business', 'product', 'sales', or 'dealer'.
     
     For each category, determine the specific intent:
     
@@ -115,9 +116,21 @@ def get_intent_from_ai_agent(query: str, conversation_history: List[Dict[str, An
     - create_sale: Create a new sale (requires customerId, products array, paymentMethod, optional amountPaid)
     - generate_invoice: Generate an invoice (requires saleId, recipientEmail)
     
+    For 'dealer' category:
+    - get_outstanding_bill: Get dealer's outstanding bill (no additional fields required; dealer id is taken from the token)
+    - get_total_bill: Get dealer's total bill (no additional fields required; dealer id is taken from the token)
+    - get_pending_balance: Get all customers with pending balance (no additional fields required; dealer id is taken from the token)
+    - get_all_customer: Get all customers (no additional fields required; dealer id is taken from the token)
+    - get_weekly_sale: Get dealer's weekly sale (no additional fields required; dealer id is taken from the token)
+    - get_monthly_sale: Get dealer's monthly sale (no additional fields required; dealer id is taken from the token)
+    - get_value_sale: Get top customers by business value (no additional fields required; dealer id is taken from the token)
+    
     Extract all relevant data for the detected intent.
     Respond with a JSON object containing 'category', 'intent', and 'data' fields.
     """
+    # ... rest of the function remains unchanged
+
+
     
     agent = create_react_agent(model=llm, tools=[], state_modifier=system_prompt)
     
@@ -161,15 +174,17 @@ def check_required_fields(category: str, intent: str, data: Dict[str, Any]):
         elif intent in ["update_customer", "delete_customer", "get_outstanding_bill", "get_total_bill"]:
             if "customerId" not in data and "name" not in data and "email" not in data:
                 required_fields = ["customerId"] 
-
         elif intent in ["get_customer_by_name", "get_customer_details"]:
-               required_fields = ["name"]
+            required_fields = ["name"]
                 
     elif category == "business":
         if intent == "register_business":
             required_fields = ["name", "phone", "address", "pincode", "state", "businessCategory", "businessType"]
-        elif intent in ["update_business", "delete_business", "get_business_details"]:
-            required_fields = ["businessId"] if "businessId" in data else ["name"]
+        elif intent == "update_business":
+            # Do not require any fields from the AI agent—
+            # the update handler will fetch the business record (and its name) using the token.
+            required_fields = []
+                
     elif category == "product":
         if intent == "create_product":
             required_fields = ["name", "gstRate", "rate"]
@@ -182,9 +197,16 @@ def check_required_fields(category: str, intent: str, data: Dict[str, Any]):
             required_fields = ["customerId", "products", "paymentMethod"]
         elif intent == "generate_invoice":
             required_fields = ["saleId", "recipientEmail"]
-    
+    elif category == "dealer":
+        if intent in [
+            "get_outstanding_bill", "get_total_bill", "get_pending_balance", 
+            "get_all_customer", "get_weekly_sale", "get_monthly_sale", "get_value_sale"
+        ]:
+            required_fields = []  # No additional data is needed; dealer id comes from the token
+
     missing_fields = [field for field in required_fields if field not in data or data[field] is None]
     return missing_fields
+
 
 # Helper function to extract token from Authorization header
 async def get_token_from_authorization(authorization: Optional[str] = Header(None)):
@@ -287,6 +309,8 @@ async def process_natural_language_query(
             result = await product_router.handle_intent(intent, data, token)
         elif category == "sales":
             result = await sales_router.handle_intent(intent, data, token)
+        elif category == "dealer":  # <-- NEW: Handle dealer intent
+            result = await dealer_handle_intent(intent, data, token)
         else:
             raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
         

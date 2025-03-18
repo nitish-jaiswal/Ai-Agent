@@ -27,6 +27,7 @@ class ProductCreate(BaseModel):
     dealer: str  # This field is required per the backend schema
 
 class ProductUpdate(BaseModel):
+    productId: str  # <-- Added required productId field
     name: Optional[str] = None
     rate: Optional[float] = None
     gstRate: Optional[float] = None
@@ -68,18 +69,130 @@ def detect_product_intent(intent: str, data: Dict[str, Any]):
     else:
         raise HTTPException(status_code=400, detail=f"Invalid product intent: {intent}")
 
-# Common intent handler for products
 async def handle_product_intent(intent: str, data: Dict[str, Any], token: str):
-    # If intent is get_product_by_name, fetch the product directly from the DB
+    # For get_product_by_name, fetch directly from the DB
     if intent == "get_product_by_name":
         product = await get_product_by_name_db(data.get("name"))
         return {"status": "success", "data": product}
     
-    # For update operations, remove keys with None values
+    # Handle update_product explicitly
     if intent == "update_product":
-        data = {k: v for k, v in data.items() if v is not None}
+        # Validate that productId is provided
+        if "productId" not in data or not data["productId"]:
+            raise HTTPException(status_code=400, detail="Missing productId")
+        
+        # Build payload with only the fields expected by the backend.
+        # Note: Ensure productId is a string (a valid ObjectId in string form).
+        payload = {"productId": str(data["productId"])}
+        
+        # Include update fields if provided
+        if "name" in data and data["name"]:
+            payload["name"] = data["name"]
+        if "rate" in data and data["rate"]:
+            try:
+                payload["rate"] = float(data["rate"])
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid rate value")
+        if "gstRate" in data and data["gstRate"]:
+            try:
+                payload["gstRate"] = float(data["gstRate"])
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid gstRate value")
+        
+        # Ensure at least one update field is provided besides productId
+        if len(payload) == 1:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one update field (name, rate, or gstRate) must be provided"
+            )
+        
+        # Use the update URL and HTTP method
+        url = f"{NODEJS_API_BASE}/product/update-product"
+        method = "PUT"
     
-    url, method, payload = detect_product_intent(intent, data)
+    else:
+        url, method, payload = detect_product_intent(intent, data)
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # (Optional) Debug print – remove or disable in production
+    print("Update payload:", payload)
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            if method == "POST":
+                response = await client.post(url, json=payload, headers=headers)
+            elif method == "PUT":
+                response = await client.put(url, json=payload, headers=headers)
+            elif method == "DELETE":
+                response = await client.request("DELETE", url, json=payload, headers=headers)
+            elif method == "GET":
+                response = await client.get(url, params=payload, headers=headers)
+            else:
+                raise HTTPException(status_code=500, detail="Unsupported HTTP method")
+            
+            if response.status_code >= 400:
+                try:
+                    error_detail = response.json()
+                except Exception:
+                    error_detail = response.text
+                return {
+                    "status": "error",
+                    "message": error_detail if isinstance(error_detail, str) else json.dumps(error_detail)
+                }
+            
+            result = response.json()
+            result["status"] = "success"
+            return result
+        except httpx.RequestError as exc:
+            return {
+                "status": "error",
+                "message": f"API request failed: {str(exc)}"
+            }
+
+    # For get_product_by_name, fetch directly from the DB
+    if intent == "get_product_by_name":
+        product = await get_product_by_name_db(data.get("name"))
+        return {"status": "success", "data": product}
+    
+    # Explicitly build payload for update_product intent
+    if intent == "update_product":
+        payload = {}
+        
+        # Validate and convert productId
+        if "productId" not in data or not data["productId"]:
+            raise HTTPException(status_code=400, detail="Missing productId")
+        payload["productId"] = str(data["productId"])
+        
+        # Process optional update fields
+        if "name" in data and data["name"]:
+            payload["name"] = data["name"]
+        
+        if "rate" in data and data["rate"]:
+            try:
+                payload["rate"] = float(data["rate"])
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid rate value")
+        
+        if "gstRate" in data and data["gstRate"]:
+            try:
+                payload["gstRate"] = float(data["gstRate"])
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid gstRate value")
+        
+        # Ensure at least one field to update is provided besides productId
+        if len(payload) == 1:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one field (name, rate, or gstRate) must be provided to update"
+            )
+        
+        url = f"{NODEJS_API_BASE}/product/update-product"
+        method = "PUT"
+    else:
+        # For other intents, use the detect_product_intent function
+        url, method, payload = detect_product_intent(intent, data)
+    
     headers = {"Authorization": f"Bearer {token}"}
     
     async with httpx.AsyncClient() as client:
@@ -99,6 +212,7 @@ async def handle_product_intent(intent: str, data: Dict[str, Any], token: str):
                 raise HTTPException(status_code=500, detail="Unsupported HTTP method")
             
             if response.status_code >= 400:
+                # Return the error detail from the backend response
                 error_detail = (
                     response.json() 
                     if response.headers.get("content-type") == "application/json" 
@@ -117,6 +231,7 @@ async def handle_product_intent(intent: str, data: Dict[str, Any], token: str):
                 "status": "error",
                 "message": f"API request failed: {str(exc)}"
             }
+
 
 # Function to extract product name from NLP query
 def extract_product_name(user_query: str) -> str:
