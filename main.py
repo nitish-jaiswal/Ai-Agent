@@ -157,7 +157,7 @@ def get_intent_from_ai_agent(query: str, conversation_history: List[Dict[str, An
     - update_product: Update product details (requires productId and at least one field to update)
     - delete_product: Delete a product (requires productId)
     - get_product_by_name: Get product by name (requires name)
-    - get_all_products: Get all products of the dealer (no additional fields required; dealer id is taken from the token)
+    - get_all_products: Get my all products (no additional fields required; dealer id is taken from the token)
 
     
     For 'sales' category:
@@ -165,8 +165,8 @@ def get_intent_from_ai_agent(query: str, conversation_history: List[Dict[str, An
     - generate_invoice: Generate an invoice (requires saleId, recipientEmail)
     
     For 'dealer' category:
-    - get_outstanding_bill: Get dealer's outstanding bill (no additional fields required; dealer id is taken from the token)
-    - get_total_bill: Get dealer's total bill (no additional fields required; dealer id is taken from the token)
+    - get_outstanding_bill: Get my outstanding bill (no additional fields required; dealer id is taken from the token)
+    - get_total_bill: Get my total bill (no additional fields required; dealer id is taken from the token)
     - get_pending_balance: Get all customers with pending balance (no additional fields required; dealer id is taken from the token)
     - get_all_customer: Get all customers (no additional fields required; dealer id is taken from the token)
     - get_weekly_sale: Get dealer's weekly sale (no additional fields required; dealer id is taken from the token)
