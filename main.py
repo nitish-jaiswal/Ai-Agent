@@ -24,6 +24,8 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
 
+import jwt
+from jwt import PyJWTError
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,6 +40,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+async def get_token_from_authorization(authorization: Optional[str] = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization header format")
+    return parts[1]
+
+# Add a helper function for token verification with logging
+def verify_token(token: str):
+    try:
+        # Replace 'HS256' with the algorithm you use and ensure JWT_SECRET is set in your environment
+        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+        return payload
+    except PyJWTError as e:
+        # Log the error to the console (or a logging system)
+        print(f"Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+# Create a debug endpoint to test token verification
+@app.get("/debug-token")
+async def debug_token(token: str = Depends(get_token_from_authorization)):
+    payload = verify_token(token)
+    return {"payload": payload}
+
+
 
 
 # Load API Keys
