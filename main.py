@@ -41,35 +41,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-async def get_token_from_authorization(authorization: Optional[str] = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-    return parts[1]
-
-# Add a helper function for token verification with logging
-def verify_token(token: str):
-    try:
-        # Replace 'HS256' with the algorithm you use and ensure JWT_SECRET is set in your environment
-        payload = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
-        return payload
-    except PyJWTError as e:
-        # Log the error to the console (or a logging system)
-        print(f"Token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-# Create a debug endpoint to test token verification
-@app.get("/debug-token")
-async def debug_token(token: str = Depends(get_token_from_authorization)):
-    payload = verify_token(token)
-    return {"payload": payload}
-
-
-
 
 # Load API Keys
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -101,22 +72,30 @@ class DetectedIntent(BaseModel):
     data: Dict[str, Any]
 
 # Get user's conversation history to maintain context
-async def get_conversation_history(conversation_id: str, max_messages: int = 5):
+async def get_conversation_history(conversation_id: str = None, user_id: str = None, max_messages: int = 5):
     """
-    Retrieve the recent conversation history for context
+    Retrieve the recent conversation history for context, filtered by user_id from the token
     """
     conversation = []
+    query = {}
+    
+    # If we have a user_id from the token, use it to filter conversations
+    if user_id:
+        query["user_id"] = user_id
+    
+    # If we also have a conversation_id, add it to ensure we're getting the right conversation
     if conversation_id:
-        cursor = db.conversations.find({"conversation_id": conversation_id}).sort("timestamp", -1).limit(max_messages)
-        async for message in cursor:
-            conversation.append({
-                "role": message["role"],
-                "content": message["content"]
-            })
-        # Reverse to get chronological order
-        conversation.reverse()
+        query["conversation_id"] = conversation_id
+    
+    cursor = db.conversations.find(query).sort("timestamp", -1).limit(max_messages)
+    async for message in cursor:
+        conversation.append({
+            "role": message["role"],
+            "content": message["content"]
+        })
+    # Reverse to get chronological order
+    conversation.reverse()
     return conversation
-
 # Save conversation message to MongoDB
 async def save_conversation_message(conversation_id: str, role: str, content: str, user_id: Optional[str] = None):
     """
@@ -261,63 +240,200 @@ def check_required_fields(category: str, intent: str, data: Dict[str, Any]):
 
 # Helper function to extract token from Authorization header
 async def get_token_from_authorization(authorization: Optional[str] = Header(None)):
+    print("=== TOKEN EXTRACTION DEBUG ===")
+    print(f"Authorization header received: {authorization[:15]}..." if authorization else "No authorization header")
+    
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
     
     parts = authorization.split()
+    print(f"Split parts: {parts[0]} {parts[1][:10]}..." if len(parts) > 1 else f"Parts: {parts}")
+    
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=401, detail="Invalid authorization header format")
     
-    return parts[1]
+    token = parts[1]
+    print(f"Extracted token: {token[:10]}...")
+    return token
 
+def get_user_id_from_token(token: str):
+    print("=== TOKEN DECODING DEBUG ===")
+    print(f"Token to decode: {token[:15]}...")
+    
+    try:
+        # First, check if it's a valid JWT format
+        parts = token.split('.')
+        print(f"Token parts: {len(parts)}")
+        
+        if len(parts) != 3:
+            print("WARNING: Token does not have 3 parts as expected for JWT")
+        
+        # Try decoding without verification
+        print("Attempting to decode token...")
+        payload = jwt.decode(token, options={"verify_signature": False})
+        print(f"Decoded payload: {payload}")
+        
+        # Try different possible id fields
+        user_id = payload.get("_id")
+        print(f"Extracted _id: {user_id}")
+        
+        if not user_id:
+            # Check for other possible ID fields
+            user_id = payload.get("id") or payload.get("userId") or payload.get("user_id")
+            print(f"Tried alternate ID fields, got: {user_id}")
+            
+            # If still not found, look for any *id field
+            if not user_id:
+                for key, value in payload.items():
+                    if key.lower().endswith('id'):
+                        user_id = value
+                        print(f"Found ID in field '{key}': {value}")
+                        break
+        
+        return user_id
+    except Exception as e:
+        print(f"Error decoding token: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        return None
+
+def generate_conversation_id(token: str):
+   
+    
+    # Extract user ID from token
+    user_id = get_user_id_from_token(token)
+    print(f"User ID extracted from token: {user_id}")
+    
+    if not user_id:
+        # Fallback to random ID if token can't be decoded
+        result = str(ObjectId())
+        print(f"No user ID found, using random ID: {result}")
+        return result
+    
+    # Use the user ID directly as the conversation ID
+    print(f"Using user ID as conversation ID: {user_id}")
+    return user_id
 # Generate a new conversation ID
-def generate_conversation_id():
-    return str(ObjectId())
+async def find_previous_data(category: str, intent: str, user_id: str):
+    """
+    Search previous conversations for relevant data for the specified intent
+    """
+    previous_data = {}
+    
+    # Define fields to look for based on intent
+    fields_to_find = []
+    if category == "customer" and intent == "create_customer":
+        fields_to_find = ["name", "email", "phone"]
+    elif category == "business" and intent == "register_business":
+        fields_to_find = ["name", "phone", "address", "pincode", "state", "businessCategory", "businessType"]
+    # Add similar conditions for other intents
+    
+    # Search in conversation history
+    if fields_to_find:
+        cursor = db.conversations.find({"user_id": user_id}).sort("timestamp", -1)
+        async for message in cursor:
+            if message["role"] == "assistant" and "result" in message["content"]:
+                try:
+                    # Try to parse the content as JSON
+                    content = json.loads(message["content"])
+                    if isinstance(content, dict) and "data" in content:
+                        for field in fields_to_find:
+                            if field in content["data"] and field not in previous_data:
+                                previous_data[field] = content["data"][field]
+                except:
+                    pass
+    
+    return previous_data if previous_data else None
+
 
 @app.post("/process-query")
 async def process_natural_language_query(
     request: IntentRequest,
     token: str = Depends(get_token_from_authorization)
 ):
-    """
-    Process a natural language query to determine intent and action
-    Also handles completing intents with missing fields via additional_data
-    """
+    user_id = get_user_id_from_token(token)
+    
     # Get conversation ID or create a new one
     conversation_id = request.conversation_id
     if not conversation_id:
-        conversation_id = generate_conversation_id()
+        conversation_id = generate_conversation_id(token)
     
     # Get conversation history for context
-    conversation_history = await get_conversation_history(conversation_id)
+    conversation_history = await get_conversation_history(conversation_id=None, user_id=user_id)
     
-    # Check if this is a follow-up with additional data for missing fields
+    # Save user query to conversation history
+    await save_conversation_message(conversation_id, "user", request.user_query, user_id=user_id)
+    
+    # Check if this is a follow-up to a previous intent with missing fields
     previous_intent = None
-    if request.additional_data and len(conversation_history) > 0:
-        # Try to find the last saved intent in the conversation history
+    missing_fields = []
+    
+    # If the query contains "yes" or "use that data" or similar confirmations
+    # and we have a stored intent with suggested data, use that data
+    if re.search(r'\b(yes|yeah|correct|use (?:that|this|the) data|confirm)\b', request.user_query.lower()):
+        for message in reversed(conversation_history):
+            if message["role"] == "assistant" and "suggested_data" in message["content"]:
+                try:
+                    suggested_data_match = re.search(r'"suggested_data":\s*({.*?})', message["content"])
+                    stored_intent_match = re.search(r'"stored_intent":\s*({.*?})', message["content"])
+                    if suggested_data_match and stored_intent_match:
+                        suggested_data = json.loads(suggested_data_match.group(1))
+                        previous_intent = json.loads(stored_intent_match.group(1))
+                        # Update the intent data with the suggested data
+                        for field, value in suggested_data.items():
+                            previous_intent["data"][field] = value
+                        break
+                except Exception as e:
+                    print(f"Error parsing previous suggestion: {str(e)}")
+                    continue
+    
+    # Look for the most recent intent with missing fields in the conversation history
+    if not previous_intent:
         for message in reversed(conversation_history):
             if message["role"] == "assistant" and "missing_fields" in message["content"]:
                 try:
-                    # Look for stored intent in the last missing_fields response
+                    # Extract the stored intent
                     stored_intent_match = re.search(r'"stored_intent":\s*({.*?})', message["content"])
                     if stored_intent_match:
                         previous_intent = json.loads(stored_intent_match.group(1))
+                        # Extract missing fields from the message
+                        missing_fields_match = re.search(r'Please provide the following information: (.*?)\.', message["content"])
+                        if missing_fields_match:
+                            missing_fields = [field.strip() for field in missing_fields_match.group(1).split(',')]
                         break
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error parsing previous intent: {str(e)}")
+                    continue
     
-    # Save user query to conversation history
-    await save_conversation_message(conversation_id, "user", request.user_query, user_id=None)
-    
-    # If we have a previous intent with missing fields and additional data, use that
-    if previous_intent and request.additional_data:
-        intent_data = previous_intent
-        # Update the data with the additional fields provided
-        for field, value in request.additional_data.items():
+    # If we have a previous intent with missing fields, try to extract the missing information
+    if previous_intent and missing_fields:
+        # Extract any additional information from the current query
+        new_intent_data = get_intent_from_ai_agent(request.user_query, conversation_history)
+        
+        # Update the previous intent with any new information
+        for field, value in new_intent_data["data"].items():
             if value is not None:
-                intent_data["data"][field] = value
+                previous_intent["data"][field] = value
+        
+        # Add any explicitly provided additional data
+        if request.additional_data:
+            for field, value in request.additional_data.items():
+                if value is not None:
+                    previous_intent["data"][field] = value
+                    
+        # Try to extract information from previous user messages
+        for message in reversed(conversation_history):
+            if message["role"] == "user":
+                try:
+                    user_message_intent = get_intent_from_ai_agent(message["content"], [])
+                    for field, value in user_message_intent["data"].items():
+                        if field not in previous_intent["data"] or previous_intent["data"][field] is None:
+                            previous_intent["data"][field] = value
+                except Exception:
+                    continue
+        
+        intent_data = previous_intent
     else:
-        # Get intent from AI agent
+        # No previous intent with missing fields, get a new intent
         intent_data = get_intent_from_ai_agent(request.user_query, conversation_history)
     
     if not all(k in intent_data for k in ["category", "intent", "data"]):
@@ -330,7 +446,52 @@ async def process_natural_language_query(
     # Check for missing required fields
     missing_fields = check_required_fields(category, intent, data)
     
-    # If fields are missing, ask the user to provide them
+    # Check for previous data if we have missing fields
+    if missing_fields:
+        previous_data = await find_previous_data(category, intent, user_id)
+        
+        if previous_data and any(field in previous_data for field in missing_fields):
+            # Filter to only include the fields we need
+            suggested_data = {field: previous_data[field] for field in missing_fields if field in previous_data}
+            
+            # If we found data for at least some of the missing fields
+            if suggested_data:
+                # Store the current intent and suggested data in the response
+                stored_intent_json = json.dumps(intent_data)
+                suggested_data_json = json.dumps(suggested_data)
+                
+                # Update the missing fields to exclude fields we have suggestions for
+                missing_fields = [field for field in missing_fields if field not in suggested_data]
+                
+                # Prepare the message to show to the user
+                fields_with_values = [f"{field}: {value}" for field, value in suggested_data.items()]
+                fields_display = ", ".join(fields_with_values)
+                
+                if missing_fields:
+                    response = {
+                        "status": "suggested_data_with_missing_fields",
+                        "message": f"I found the following information from your previous conversations: {fields_display}. Would you like to use this data? Also, please provide the following missing information: {', '.join(missing_fields)}",
+                        "suggested_data": suggested_data,
+                        "remaining_fields": missing_fields,
+                        "conversation_id": conversation_id,
+                        "stored_intent": intent_data
+                    }
+                else:
+                    response = {
+                        "status": "suggested_data",
+                        "message": f"I found the following information from your previous conversations: {fields_display}. Would you like to use this data?",
+                        "suggested_data": suggested_data,
+                        "conversation_id": conversation_id,
+                        "stored_intent": intent_data
+                    }
+                
+                # Save assistant response to conversation history including the stored intent and suggested data
+                response_content = f"{response['message']} \"stored_intent\": {stored_intent_json}, \"suggested_data\": {suggested_data_json}"
+                await save_conversation_message(conversation_id, "assistant", response_content, user_id=user_id)
+                
+                return response
+    
+    # If fields are still missing (and we don't have suggested data for them)
     if missing_fields:
         # Store the current intent in the response for later continuation
         stored_intent_json = json.dumps(intent_data)
@@ -341,12 +502,12 @@ async def process_natural_language_query(
             "required_fields": missing_fields,
             "conversation_id": conversation_id,
             "stored_intent": intent_data,
-            "how_to_proceed": "Please send another request to /process-query with the same conversation_id and the missing fields in the additional_data field."
+            "how_to_proceed": "Please continue the conversation with the missing information."
         }
         
         # Save assistant response to conversation history including the stored intent
         response_content = f"Please provide the following information: {', '.join(missing_fields)}. \"stored_intent\": {stored_intent_json}"
-        await save_conversation_message(conversation_id, "assistant", response_content)
+        await save_conversation_message(conversation_id, "assistant", response_content, user_id=user_id)
         
         return response
     
@@ -360,14 +521,14 @@ async def process_natural_language_query(
             result = await product_router.handle_intent(intent, data, token)
         elif category == "sales":
             result = await sales_router.handle_intent(intent, data, token)
-        elif category == "dealer":  # <-- NEW: Handle dealer intent
+        elif category == "dealer":
             result = await dealer_handle_intent(intent, data, token)
         else:
             raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
         
         # Save the successful response to conversation history
         response_content = json.dumps(result) if isinstance(result, dict) else str(result)
-        await save_conversation_message(conversation_id, "assistant", response_content)
+        await save_conversation_message(conversation_id, "assistant", response_content, user_id=user_id)
         
         # Add conversation_id to the response
         if isinstance(result, dict):
